@@ -1,5 +1,5 @@
 import random
-n_sims = 1
+n_sims = 1000
 chance_of_playing_double=1
 
 
@@ -326,6 +326,150 @@ class Player:
                 except ValueError:
                     print("Please enter a valid number.")
             
+        if self.strategy == "AI":
+            # Advanced AI strategy
+            playable_numbers = table.get_playable_numbers()
+            
+            if not playable_numbers:
+                # First play - use a balanced approach
+                number_counts = {}
+                for tile in self.tiles:
+                    for number in tile:
+                        number_counts[number] = number_counts.get(number, 0) + 1
+                
+                best_tile = max(self.tiles, key=lambda t: sum(number_counts.get(n, 0) for n in t))
+                self.tiles.remove(best_tile)
+                table.play_tile(best_tile, self.name)
+                #global initial_tile
+                initial_tile = best_tile
+                return best_tile
+            
+            # Analyze played tiles to estimate remaining tiles
+            played_count = {}
+            for player_name, tile in table.play_history:
+                played_count[tile[0]] = played_count.get(tile[0], 0) + 1
+                if tile[0] != tile[1]:
+                    played_count[tile[1]] = played_count.get(tile[1], 0) + 1
+            
+            # Find our tiles in hand
+            our_count = {}
+            for tile in self.tiles:
+                our_count[tile[0]] = our_count.get(tile[0], 0) + 1
+                if tile[0] != tile[1]:
+                    our_count[tile[1]] = our_count.get(tile[1], 0) + 1
+            
+            # Get teammate and opponent info
+            teammate = None
+            opponent1 = None
+            opponent2 = None
+            for p in self.all_players:
+                if p.team == self.team and p != self:
+                    teammate = p
+                elif p.team != self.team:
+                    if opponent1 is None:
+                        opponent1 = p
+                    else:
+                        opponent2 = p
+            
+            # Calculate how close each player is to winning
+            our_tiles = len(self.tiles) - 1  # -1 for the tile we'll play
+            teammate_tiles = len(teammate.tiles) if teammate else float('inf')
+            opp1_tiles = len(opponent1.tiles) if opponent1 else float('inf')
+            opp2_tiles = len(opponent2.tiles) if opponent2 else float('inf')
+            
+            # Find valid moves
+            valid_moves = []
+            for i, tile in enumerate(self.tiles):
+                if tile[0] in playable_numbers or tile[1] in playable_numbers:
+                    valid_moves.append((i, tile))
+            
+            if not valid_moves:
+                return None
+            
+            best_move = None
+            best_score = float('-inf')
+            
+            for idx, tile in valid_moves:
+                score = 0
+                reasoning = []
+                
+                # Priority 1: Does it win for us?
+                if our_tiles <= 0:
+                    score += 1000
+                    reasoning.append("Win for us (+1000)")
+                
+                # Priority 2: Does it help our teammate win?
+                if teammate_tiles <= 0:
+                    score += 900
+                    reasoning.append("Win for teammate (+900)")
+                
+                # Priority 3: Does it prevent opponent from winning?
+                if opp1_tiles <= 0 or opp2_tiles <= 0:
+                    score -= 500  # Penalize if we let them win
+                    reasoning.append("Opponent close to winning (-500)")
+                
+                # Priority 4: Reduce variance - play numbers we have many of
+                numbers_in_tile = set(tile)
+                our_strength = sum(our_count.get(n, 0) for n in numbers_in_tile)
+                score += our_strength * 10
+                reasoning.append(f"Our strength in tile (+{our_strength * 10})")
+                
+                # Priority 5: Block opponent's likely strong numbers
+                # Count how many unplayed tiles of each number exist
+                unplayed_count = {}
+                for num in range(7):
+                    unplayed_count[num] = 8 - played_count.get(num, 0)
+                
+                # If we have a tile with rare numbers, it's less useful
+                rare_bonus = 0
+                for num in numbers_in_tile:
+                    if unplayed_count.get(num, 0) <= 2:
+                        rare_bonus += 5
+                score += rare_bonus
+                if rare_bonus > 0:
+                    reasoning.append(f"Rare numbers bonus (+{rare_bonus})")
+                
+                # Priority 6: Keep control - prefer moves that don't leave too many options
+                resulting_playable = set(playable_numbers)
+                if tile[0] in playable_numbers:
+                    resulting_playable.add(tile[1])
+                if tile[1] in playable_numbers:
+                    resulting_playable.add(tile[0])
+                
+                # Prefer having few options for opponents (fewer ways to help them)
+                opponent_options = sum(unplayed_count.get(n, 0) for n in resulting_playable)
+                option_penalty = opponent_options * 2
+                score -= option_penalty
+                reasoning.append(f"Opponent options penalty (-{option_penalty})")
+                
+                # Priority 7: Team strategy - help teammate if they're close to winning
+                team_bonus = 0
+                if teammate_tiles <= 3 and teammate_tiles < our_tiles:
+                    # Check if this move helps teammate's likely strong numbers
+                    if initial_tile and any(n in initial_tile for n in tile):
+                        team_bonus = 50
+                        score += team_bonus
+                        reasoning.append(f"Support teammate (+{team_bonus})")
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (idx, tile, reasoning)
+            
+            if best_move:
+                idx, tile, reasoning = best_move
+                self.tiles.remove(tile)
+                table.play_tile(tile, self.name)
+                
+                # Print reasoning
+                if len(valid_moves) == 1:
+                    print(f"Player {self.name} reasoning: No other option available")
+                else:
+                    reasoning_str = ", ".join(reasoning)
+                    print(f"Player {self.name} reasoning: {tile} - {reasoning_str} (total: {best_score:.1f})")
+                return tile
+            
+            return None
+
         if self.strategy == "Block":
             # Find the next player
             next_player = None
@@ -453,10 +597,11 @@ def simulate_game(verbose=False):
     table = Table()
     players = [Player(name, "Random") for name in ["A", "B", "C", "D"]]
     #******************
-    players[0].strategy = "Random"  # Set player A to use the Win strategy
-    players[1].strategy = "Random"  # Set player B to use Random strategy
-    players[2].strategy = "Random"  # Set player C to use the Help strategy
-    players[3].strategy = "User"  # Set player D to use Random strategy
+    #Possible strategies are "Win", "Help", "Block", "Random", "AI", "User"
+    players[0].strategy = "AI"  # Set player A to use the Win strategy
+    players[1].strategy = "AI"  # Set player B to use Random strategy
+    players[2].strategy = "AI"  # Set player C to use the Help strategy
+    players[3].strategy = "AI"  # Set player D to use Random strategy
     
     # Give each player access to all players for strategy switching
     for player in players:
@@ -508,7 +653,7 @@ if __name__ == "__main__":
         results[player] = 0
     
     for _ in range(n_sims):
-        winner = simulate_game(True)
+        winner = simulate_game(False)
         if winner:
             results[winner.name] += 1
             results['TEAM_' + winner.team] += 1
